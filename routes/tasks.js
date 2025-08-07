@@ -1,4 +1,3 @@
- 
 const express = require('express');
 const { body, validationResult, query } = require('express-validator');
 const { PrismaClient } = require('@prisma/client');
@@ -9,6 +8,61 @@ const notificationService = require('../services/notificationService');
 
 const router = express.Router();
 const prisma = new PrismaClient();
+
+// Helper function to validate MongoDB ObjectId
+const isValidObjectId = (id) => {
+  return /^[0-9a-fA-F]{24}$/.test(id);
+};
+
+// Debug middleware to log all requests
+router.use((req, res, next) => {
+  console.log(`${req.method} ${req.path} - Params:`, req.params, 'Query:', req.query);
+  next();
+});
+
+// ObjectId validation middleware
+const validateObjectId = (paramName) => {
+  return (req, res, next) => {
+    const id = req.params[paramName];
+    console.log(`Validating ${paramName}: "${id}"`);
+    
+    if (!id) {
+      return res.status(400).json({
+        message: `Missing ${paramName} parameter`,
+        path: req.path,
+        params: req.params
+      });
+    }
+    
+    if (!isValidObjectId(id)) {
+      return res.status(400).json({
+        message: `Invalid ${paramName}. Must be a valid MongoDB ObjectId (24 hex characters).`,
+        received: id,
+        length: id.length,
+        example: "507f1f77bcf86cd799439011"
+      });
+    }
+    
+    next();
+  };
+};
+
+// Helper function to get assigned products for a task
+const getAssignedProducts = async (assignedProductIds) => {
+  if (!assignedProductIds || assignedProductIds.length === 0) return [];
+  
+  return await prisma.user.findMany({
+    where: {
+      id: { in: assignedProductIds }
+    },
+    select: {
+      id: true,
+      fullName: true,
+      username: true,
+      email: true
+    }
+  });
+};
 
 // Get dashboard data
 router.get('/dashboard', async (req, res) => {
@@ -58,11 +112,21 @@ router.get('/dashboard', async (req, res) => {
       take: 10,
       include: {
         creator: { select: { fullName: true, username: true } },
-        assignedProducts: { select: { fullName: true, username: true } },
         assignedCompliance: { select: { fullName: true, username: true } },
         _count: { select: { versions: true, comments: true } }
       }
     });
+
+    // Add assigned products manually
+    const tasksWithProducts = await Promise.all(
+      recentTasks.map(async (task) => {
+        const assignedProducts = await getAssignedProducts(task.assignedProductIds);
+        return {
+          ...task,
+          assignedProducts
+        };
+      })
+    );
 
     res.json({
       metrics: {
@@ -71,7 +135,7 @@ router.get('/dashboard', async (req, res) => {
         complianceReviewRequired,
         totalTasks
       },
-      recentTasks
+      recentTasks: tasksWithProducts
     });
 
   } catch (error) {
@@ -157,7 +221,6 @@ router.get('/', [
         take: limit,
         include: {
           creator: { select: { fullName: true, username: true } },
-          assignedProducts: { select: { fullName: true, username: true } },
           assignedCompliance: { select: { fullName: true, username: true } },
           exchangeApprovals: {
             select: { exchangeName: true, referenceNumber: true, approvalStatus: true }
@@ -168,8 +231,19 @@ router.get('/', [
       prisma.task.count({ where: whereClause })
     ]);
 
+    // Add assigned products manually
+    const tasksWithProducts = await Promise.all(
+      tasks.map(async (task) => {
+        const assignedProducts = await getAssignedProducts(task.assignedProductIds);
+        return {
+          ...task,
+          assignedProducts
+        };
+      })
+    );
+
     res.json({
-      tasks,
+      tasks: tasksWithProducts,
       pagination: {
         page,
         limit,
@@ -187,64 +261,119 @@ router.get('/', [
 });
 
 // Get task by ID
-router.get('/:taskId', checkTaskAccess, async (req, res) => {
-  try {
-    const task = await prisma.task.findUnique({
-      where: { id: req.params.taskId },
-      include: {
-        creator: { select: { fullName: true, username: true, email: true } },
-        assignedProducts: { select: { id: true, fullName: true, username: true, email: true } },
-        assignedCompliance: { select: { id: true, fullName: true, username: true, email: true } },
-        versions: {
-          orderBy: { uploadedAt: 'desc' },
-          include: {
-            uploadedBy: { select: { fullName: true, username: true } },
-            comments: {
-              orderBy: { createdAt: 'desc' },
-              include: {
-                author: { select: { fullName: true, username: true, role: true } }
+router.get('/:taskId', 
+  validateObjectId('taskId'),
+  async (req, res) => {
+    try {
+      const taskId = req.params.taskId;
+      const userId = req.user.id;
+      const userRole = req.user.role;
+
+      const task = await prisma.task.findUnique({
+        where: { id: taskId },
+        include: {
+          creator: { select: { fullName: true, username: true, email: true } },
+          assignedCompliance: { select: { id: true, fullName: true, username: true, email: true } },
+          versions: {
+            orderBy: { uploadedAt: 'desc' },
+            include: {
+              uploadedBy: { select: { fullName: true, username: true } },
+              comments: {
+                orderBy: { createdAt: 'desc' },
+                include: {
+                  author: { select: { fullName: true, username: true, role: true } }
+                }
               }
             }
-          }
-        },
-        comments: {
-          where: { isGlobal: true },
-          orderBy: { createdAt: 'desc' },
-          include: {
-            author: { select: { fullName: true, username: true, role: true } }
-          }
-        },
-        exchangeApprovals: {
-          orderBy: { createdAt: 'asc' },
-          include: {
-            updatedBy: { select: { fullName: true, username: true } }
+          },
+          comments: {
+            where: { isGlobal: true },
+            orderBy: { createdAt: 'desc' },
+            include: {
+              author: { select: { fullName: true, username: true, role: true } }
+            }
+          },
+          exchangeApprovals: {
+            orderBy: { createdAt: 'asc' },
+            include: {
+              updatedBy: { select: { fullName: true, username: true } }
+            }
           }
         }
+      });
+
+      if (!task) {
+        return res.status(404).json({ message: 'Task not found' });
       }
-    });
 
-    if (!task) {
-      return res.status(404).json({ message: 'Task not found' });
+      // Check access
+      let hasAccess = false;
+      if (['ADMIN', 'SENIOR_MANAGER'].includes(userRole)) {
+        hasAccess = true;
+      } else if (['PRODUCT_USER', 'PRODUCT_ADMIN'].includes(userRole)) {
+        hasAccess = task.createdBy === userId || task.assignedProductIds.includes(userId);
+      } else if (['COMPLIANCE_USER', 'COMPLIANCE_ADMIN'].includes(userRole)) {
+        hasAccess = task.assignedComplianceId === userId || userRole === 'COMPLIANCE_ADMIN';
+      }
+
+      if (!hasAccess) {
+        return res.status(403).json({ message: 'Access denied to this task' });
+      }
+
+      // Add assigned products manually
+      const assignedProducts = await getAssignedProducts(task.assignedProductIds);
+
+      res.json({
+        ...task,
+        assignedProducts
+      });
+
+    } catch (error) {
+      console.error('Get task error:', error);
+      res.status(500).json({ message: 'Failed to fetch task' });
     }
-
-    res.json(task);
-
-  } catch (error) {
-    console.error('Get task error:', error);
-    res.status(500).json({ message: 'Failed to fetch task' });
   }
-});
+);
 
 // Create new task
 router.post('/', [
   authorize('PRODUCT_USER', 'PRODUCT_ADMIN', 'ADMIN'),
-  body('title').notEmpty().withMessage('Title is required').isLength({ max: 200 }),
-  body('description').optional().isLength({ max: 1000 }),
-  body('assignedProductIds').isArray().withMessage('Assigned products must be an array'),
-  body('expectedPublishDate').optional().isISO8601(),
-  body('platform').optional().isString(),
-  body('category').optional().isString(),
-  body('remarks').optional().isString()
+  body('title')
+    .notEmpty()
+    .withMessage('Title is required')
+    .isLength({ max: 200 })
+    .withMessage('Title must not exceed 200 characters'),
+  body('description')
+    .optional()
+    .isLength({ max: 1000 })
+    .withMessage('Description must not exceed 1000 characters'),
+  body('assignedProductIds')
+    .isArray()
+    .withMessage('Assigned products must be an array')
+    .custom((value) => {
+      if (!Array.isArray(value)) return false;
+      const invalidIds = value.filter(id => !isValidObjectId(id));
+      if (invalidIds.length > 0) {
+        throw new Error(`Invalid ObjectIds in assignedProductIds: ${invalidIds.join(', ')}`);
+      }
+      return true;
+    }),
+  body('expectedPublishDate')
+    .optional()
+    .isISO8601()
+    .withMessage('Invalid expected publish date'),
+  body('platform')
+    .optional()
+    .isString()
+    .trim(),
+  body('category')
+    .optional()
+    .isString()
+    .trim(),
+  body('remarks')
+    .optional()
+    .isString()
+    .trim()
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -328,18 +457,15 @@ router.post('/', [
       },
       include: {
         creator: { select: { fullName: true, username: true } },
-        assignedProducts: { select: { fullName: true, username: true } },
         assignedCompliance: { select: { fullName: true, username: true } }
       }
     });
 
+    // Add assigned products manually
+    const assignedProducts = await getAssignedProducts(task.assignedProductIds);
+
     // Create audit log
-    await auditService.log({
-      action: 'TASK_CREATED',
-      details: `Task "${title}" created with UIN: ${uin}`,
-      performedBy: req.user.id,
-      taskId: task.id
-    });
+    await auditService.logTaskCreated(task.id, title, req.user.id);
 
     // Send notification to assigned compliance user
     await notificationService.sendTaskAssignedNotification(
@@ -350,7 +476,10 @@ router.post('/', [
 
     res.status(201).json({
       message: 'Task created successfully',
-      task
+      task: {
+        ...task,
+        assignedProducts
+      }
     });
 
   } catch (error) {
@@ -361,7 +490,7 @@ router.post('/', [
 
 // Update task
 router.put('/:taskId', [
-  checkTaskAccess,
+  validateObjectId('taskId'),
   body('title').optional().isLength({ max: 200 }),
   body('description').optional().isLength({ max: 1000 }),
   body('taskType').optional().isIn(['INTERNAL', 'EXCHANGE']),
@@ -389,15 +518,32 @@ router.put('/:taskId', [
       return res.status(404).json({ message: 'Task not found' });
     }
 
+    // Check access
+    let hasAccess = false;
+    if (['ADMIN', 'SENIOR_MANAGER'].includes(userRole)) {
+      hasAccess = true;
+    } else if (['PRODUCT_USER', 'PRODUCT_ADMIN'].includes(userRole)) {
+      hasAccess = currentTask.createdBy === userId || currentTask.assignedProductIds.includes(userId);
+    } else if (['COMPLIANCE_USER', 'COMPLIANCE_ADMIN'].includes(userRole)) {
+      hasAccess = currentTask.assignedComplianceId === userId || userRole === 'COMPLIANCE_ADMIN';
+    }
+
+    if (!hasAccess) {
+      return res.status(403).json({ message: 'Access denied to this task' });
+    }
+
     const updateData = { ...req.body };
     
     // Role-based update restrictions
     if (['PRODUCT_USER', 'PRODUCT_ADMIN'].includes(userRole)) {
-      // Product users can only update description and status to limited values
       const allowedFields = ['description'];
-      updateData = Object.fromEntries(
-        Object.entries(updateData).filter(([key]) => allowedFields.includes(key))
-      );
+      const filteredData = {};
+      allowedFields.forEach(field => {
+        if (updateData[field] !== undefined) {
+          filteredData[field] = updateData[field];
+        }
+      });
+      Object.assign(updateData, filteredData);
     }
 
     // Handle status changes
@@ -448,7 +594,6 @@ router.put('/:taskId', [
 
       // Send notifications on status change
       if (newStatus === 'PRODUCT_REVIEW') {
-        // Notify assigned product users
         for (const productId of currentTask.assignedProductIds) {
           await notificationService.sendNotification({
             userId: productId,
@@ -459,7 +604,6 @@ router.put('/:taskId', [
           });
         }
       } else if (newStatus === 'COMPLIANCE_REVIEW') {
-        // Notify compliance user
         if (currentTask.assignedComplianceId) {
           await notificationService.sendNotification({
             userId: currentTask.assignedComplianceId,
@@ -478,22 +622,22 @@ router.put('/:taskId', [
       data: updateData,
       include: {
         creator: { select: { fullName: true, username: true } },
-        assignedProducts: { select: { fullName: true, username: true } },
         assignedCompliance: { select: { fullName: true, username: true } }
       }
     });
 
+    // Add assigned products manually
+    const assignedProducts = await getAssignedProducts(updatedTask.assignedProductIds);
+
     // Create audit log
-    await auditService.log({
-      action: 'TASK_UPDATED',
-      details: `Task updated: ${Object.keys(updateData).join(', ')}`,
-      performedBy: userId,
-      taskId
-    });
+    await auditService.logTaskUpdated(taskId, updatedTask.title, Object.keys(updateData), userId);
 
     res.json({
       message: 'Task updated successfully',
-      task: updatedTask
+      task: {
+        ...updatedTask,
+        assignedProducts
+      }
     });
 
   } catch (error) {
@@ -504,7 +648,7 @@ router.put('/:taskId', [
 
 // Upload new version
 router.post('/:taskId/versions', [
-  checkTaskAccess,
+  validateObjectId('taskId'),
   authorize('PRODUCT_USER', 'PRODUCT_ADMIN', 'ADMIN'),
   body('fileUrls').isArray().withMessage('File URLs must be an array'),
   body('remarks').optional().isString()
@@ -527,6 +671,12 @@ router.post('/:taskId/versions', [
 
     if (!task) {
       return res.status(404).json({ message: 'Task not found' });
+    }
+
+    // Check access
+    const hasAccess = task.createdBy === userId || task.assignedProductIds.includes(userId) || req.user.role === 'ADMIN';
+    if (!hasAccess) {
+      return res.status(403).json({ message: 'Access denied' });
     }
 
     // Generate next version number
@@ -558,12 +708,7 @@ router.post('/:taskId/versions', [
     });
 
     // Create audit log
-    await auditService.log({
-      action: 'VERSION_UPLOADED',
-      details: `Version ${versionNumber} uploaded with ${fileUrls.length} files`,
-      performedBy: userId,
-      taskId
-    });
+    await auditService.logVersionUploaded(taskId, task.title, versionNumber, fileUrls.length, userId);
 
     // Notify compliance user
     if (task.assignedComplianceId) {
@@ -589,7 +734,7 @@ router.post('/:taskId/versions', [
 
 // Add comment
 router.post('/:taskId/comments', [
-  checkTaskAccess,
+  validateObjectId('taskId'),
   body('content').notEmpty().withMessage('Comment content is required'),
   body('versionId').optional().isString(),
   body('isGlobal').optional().isBoolean(),
@@ -604,6 +749,30 @@ router.post('/:taskId/comments', [
     const taskId = req.params.taskId;
     const { content, versionId, isGlobal = false, attachments = [] } = req.body;
     const userId = req.user.id;
+
+    // Check if task exists and user has access
+    const task = await prisma.task.findUnique({
+      where: { id: taskId }
+    });
+
+    if (!task) {
+      return res.status(404).json({ message: 'Task not found' });
+    }
+
+    // Check access
+    const userRole = req.user.role;
+    let hasAccess = false;
+    if (['ADMIN', 'SENIOR_MANAGER'].includes(userRole)) {
+      hasAccess = true;
+    } else if (['PRODUCT_USER', 'PRODUCT_ADMIN'].includes(userRole)) {
+      hasAccess = task.createdBy === userId || task.assignedProductIds.includes(userId);
+    } else if (['COMPLIANCE_USER', 'COMPLIANCE_ADMIN'].includes(userRole)) {
+      hasAccess = task.assignedComplianceId === userId || userRole === 'COMPLIANCE_ADMIN';
+    }
+
+    if (!hasAccess) {
+      return res.status(403).json({ message: 'Access denied' });
+    }
 
     // Verify version exists if provided
     if (versionId) {
@@ -633,7 +802,6 @@ router.post('/:taskId/comments', [
 
     // Update task status if compliance user is commenting
     if (['COMPLIANCE_USER', 'COMPLIANCE_ADMIN'].includes(req.user.role)) {
-      const task = await prisma.task.findUnique({ where: { id: taskId } });
       if (task.status === 'COMPLIANCE_REVIEW') {
         await prisma.task.update({
           where: { id: taskId },
@@ -641,11 +809,7 @@ router.post('/:taskId/comments', [
         });
 
         // Notify assigned product users
-        const taskWithAssignments = await prisma.task.findUnique({
-          where: { id: taskId }
-        });
-        
-        for (const productId of taskWithAssignments.assignedProductIds) {
+        for (const productId of task.assignedProductIds) {
           await notificationService.sendNotification({
             userId: productId,
             title: 'Comment Added',
@@ -658,12 +822,7 @@ router.post('/:taskId/comments', [
     }
 
     // Create audit log
-    await auditService.log({
-      action: 'COMMENT_ADDED',
-      details: `Comment added${versionId ? ` to version ${comment.version?.versionNumber}` : ' as global comment'}`,
-      performedBy: userId,
-      taskId
-    });
+    await auditService.logCommentAdded(taskId, task.title, isGlobal, comment.version?.versionNumber, userId);
 
     res.status(201).json({
       message: 'Comment added successfully',
@@ -676,9 +835,9 @@ router.post('/:taskId/comments', [
   }
 });
 
-// Exchange approval management
+// Exchange approval management - CREATE (POST)
 router.post('/:taskId/exchange-approvals', [
-  checkTaskAccess,
+  validateObjectId('taskId'),
   authorize('COMPLIANCE_USER', 'COMPLIANCE_ADMIN', 'ADMIN'),
   body('exchangeName').isIn(['NSE', 'BSE', 'MCX', 'NCDEX']).withMessage('Invalid exchange name'),
   body('typeOfContent').notEmpty().withMessage('Type of content is required')
@@ -693,8 +852,14 @@ router.post('/:taskId/exchange-approvals', [
     const { exchangeName, typeOfContent } = req.body;
     const userId = req.user.id;
 
+    console.log('Creating exchange approval for task:', taskId);
+
     // Verify task type is EXCHANGE
     const task = await prisma.task.findUnique({ where: { id: taskId } });
+    if (!task) {
+      return res.status(404).json({ message: 'Task not found' });
+    }
+
     if (task.taskType !== 'EXCHANGE') {
       return res.status(400).json({ message: 'Task must be of type EXCHANGE' });
     }
@@ -722,12 +887,9 @@ router.post('/:taskId/exchange-approvals', [
     });
 
     // Create audit log
-    await auditService.log({
-      action: 'EXCHANGE_APPROVAL_ADDED',
-      details: `Exchange approval entry added for ${exchangeName}`,
-      performedBy: userId,
-      taskId
-    });
+    if (auditService.logExchangeApprovalAdded) {
+      await auditService.logExchangeApprovalAdded(taskId, task.title, exchangeName, userId);
+    }
 
     res.status(201).json({
       message: 'Exchange approval entry added successfully',
@@ -736,29 +898,83 @@ router.post('/:taskId/exchange-approvals', [
 
   } catch (error) {
     console.error('Add exchange approval error:', error);
-    res.status(500).json({ message: 'Failed to add exchange approval entry' });
+    res.status(500).json({ 
+      message: 'Failed to add exchange approval entry',
+      error: error.message 
+    });
   }
 });
 
-// Update exchange approval
-router.put('/:taskId/exchange-approvals/:approvalId', [
-  checkTaskAccess,
-  authorize('COMPLIANCE_USER', 'COMPLIANCE_ADMIN', 'ADMIN'),
-  body('approvalStatus').optional().isIn(['APPROVED', 'PENDING', 'REJECTED', 'NOT_SENT']),
-  body('approvalDate').optional().isISO8601(),
-  body('expiryDate').optional().isISO8601(),
-  body('referenceNumber').optional().isString(),
-  body('approvalEmailUrl').optional().isString()
-], async (req, res) => {
+// Exchange approval management - UPDATE (PUT)
+// Manual parameter extraction to fix the route parsing issue
+router.put('/:taskId/exchange-approvals/:approvalId', async (req, res) => {
   try {
+    // Manual parameter extraction and validation
+    const taskId = req.params.taskId;
+    const approvalId = req.params.approvalId;
+    
+    console.log('=== EXCHANGE APPROVAL UPDATE ===');
+    console.log('Raw URL:', req.originalUrl);
+    console.log('Path:', req.path);
+    console.log('Params object:', req.params);
+    console.log('TaskId extracted:', taskId);
+    console.log('ApprovalId extracted:', approvalId);
+    
+    // Validate taskId
+    if (!taskId || !isValidObjectId(taskId)) {
+      return res.status(400).json({
+        message: 'Invalid taskId. Must be a valid MongoDB ObjectId.',
+        received: taskId,
+        path: req.path
+      });
+    }
+    
+    // Validate approvalId
+    if (!approvalId || !isValidObjectId(approvalId)) {
+      return res.status(400).json({
+        message: 'Invalid approvalId. Must be a valid MongoDB ObjectId.',
+        received: approvalId,
+        path: req.path
+      });
+    }
+
+    // Check authorization
+    if (!['COMPLIANCE_USER', 'COMPLIANCE_ADMIN', 'ADMIN'].includes(req.user.role)) {
+      return res.status(403).json({ message: 'Insufficient permissions' });
+    }
+
+    // Validate request body
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
+      console.log('Validation errors:', errors.array());
       return res.status(400).json({ errors: errors.array() });
     }
 
-    const { approvalId } = req.params;
     const userId = req.user.id;
-    const updateData = { ...req.body, updatedById: userId };
+
+    // Verify the exchange approval exists and belongs to the task
+    console.log('Looking for exchange approval with ID:', approvalId, 'for task:', taskId);
+    
+    const existingApproval = await prisma.exchangeApproval.findFirst({
+      where: {
+        id: approvalId,
+        taskId: taskId
+      },
+      include: {
+        task: { select: { title: true, taskType: true } }
+      }
+    });
+
+    if (!existingApproval) {
+      console.log('Exchange approval not found');
+      return res.status(404).json({ message: 'Exchange approval not found' });
+    }
+
+    console.log('Found existing approval:', existingApproval.id);
+
+    if (existingApproval.task.taskType !== 'EXCHANGE') {
+      return res.status(400).json({ message: 'Task must be of type EXCHANGE' });
+    }
 
     // Validation for APPROVED status
     if (req.body.approvalStatus === 'APPROVED') {
@@ -769,22 +985,41 @@ router.put('/:taskId/exchange-approvals/:approvalId', [
       }
     }
 
+    // Prepare update data
+    const updateData = { ...req.body };
+    updateData.updatedById = userId;
+
+    // Remove undefined fields
+    Object.keys(updateData).forEach(key => {
+      if (updateData[key] === undefined) {
+        delete updateData[key];
+      }
+    });
+
+    console.log('Update data:', updateData);
+
     // Update exchange approval
     const exchangeApproval = await prisma.exchangeApproval.update({
       where: { id: approvalId },
       data: updateData,
       include: {
-        updatedBy: { select: { fullName: true, username: true } }
+        updatedBy: { select: { fullName: true, username: true } },
+        task: { select: { title: true } }
       }
     });
 
+    console.log('Exchange approval updated successfully');
+
     // Create audit log
-    await auditService.log({
-      action: 'EXCHANGE_APPROVAL_UPDATED',
-      details: `Exchange approval updated for ${exchangeApproval.exchangeName}`,
-      performedBy: userId,
-      taskId: req.params.taskId
-    });
+    if (auditService.logExchangeApprovalUpdated) {
+      await auditService.logExchangeApprovalUpdated(
+        taskId, 
+        exchangeApproval.task.title, 
+        exchangeApproval.exchangeName, 
+        Object.keys(updateData), 
+        userId
+      );
+    }
 
     res.json({
       message: 'Exchange approval updated successfully',
@@ -793,8 +1028,36 @@ router.put('/:taskId/exchange-approvals/:approvalId', [
 
   } catch (error) {
     console.error('Update exchange approval error:', error);
-    res.status(500).json({ message: 'Failed to update exchange approval' });
+    res.status(500).json({ 
+      message: 'Failed to update exchange approval',
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
   }
 });
+
+// Add body validation middleware for the PUT route (applied after the route handler)
+router.use('/:taskId/exchange-approvals/:approvalId', [
+  body('approvalStatus')
+    .optional()
+    .isIn(['APPROVED', 'PENDING', 'REJECTED', 'NOT_SENT'])
+    .withMessage('Invalid approval status'),
+  body('approvalDate')
+    .optional()
+    .isISO8601()
+    .withMessage('Invalid approval date'),
+  body('expiryDate')
+    .optional()
+    .isISO8601()
+    .withMessage('Invalid expiry date'),
+  body('referenceNumber')
+    .optional()
+    .isString()
+    .trim(),
+  body('approvalEmailUrl')
+    .optional()
+    .isString()
+    .trim()
+]);
 
 module.exports = router;

@@ -54,6 +54,20 @@ if (process.env.NODE_ENV !== 'production') {
   app.use(morgan('dev'));
 }
 
+// MongoDB ObjectId validation middleware
+const validateObjectId = (paramName) => {
+  return (req, res, next) => {
+    const id = req.params[paramName];
+    if (!id || !/^[0-9a-fA-F]{24}$/.test(id)) {
+      return res.status(400).json({ 
+        message: `Invalid ${paramName} format. Must be a valid MongoDB ObjectId (24 hex characters).`,
+        example: "507f1f77bcf86cd799439011"
+      });
+    }
+    next();
+  };
+};
+
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.status(200).json({ 
@@ -77,7 +91,35 @@ app.get('/', (req, res) => {
   res.json({ 
     message: 'Advertisement Compliance Tool API',
     version: '1.0.0',
-    documentation: '/api/docs'
+    documentation: '/api/docs',
+    endpoints: {
+      health: '/health',
+      auth: '/api/auth',
+      tasks: '/api/tasks',
+      users: '/api/users',
+      reports: '/api/reports',
+      notifications: '/api/notifications',
+      audit: '/api/audit',
+      upload: '/api/upload'
+    }
+  });
+});
+
+// API info route
+app.get('/api', (req, res) => {
+  res.json({
+    message: 'Advertisement Compliance Tool API',
+    version: '1.0.0',
+    timestamp: new Date().toISOString(),
+    endpoints: {
+      auth: '/api/auth',
+      users: '/api/users', 
+      tasks: '/api/tasks',
+      reports: '/api/reports',
+      notifications: '/api/notifications',
+      audit: '/api/audit',
+      upload: '/api/upload'
+    }
   });
 });
 
@@ -86,7 +128,11 @@ app.use(errorHandler);
 
 // 404 handler
 app.use('*', (req, res) => {
-  res.status(404).json({ message: 'Route not found' });
+  res.status(404).json({ 
+    message: 'Route not found',
+    path: req.originalUrl,
+    method: req.method
+  });
 });
 
 // Graceful shutdown
