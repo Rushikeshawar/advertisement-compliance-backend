@@ -1,8 +1,15 @@
- 
 const jwt = require('jsonwebtoken');
 const { PrismaClient } = require('@prisma/client');
 
-const prisma = new PrismaClient();
+// Initialize Prisma with DocumentDB-specific settings
+const prisma = new PrismaClient({
+  datasources: {
+    db: {
+      url: process.env.DATABASE_URL
+    }
+  },
+  log: process.env.NODE_ENV === 'development' ? ['query', 'error', 'warn'] : ['error']
+});
 
 const authenticateToken = async (req, res, next) => {
   try {
@@ -36,6 +43,8 @@ const authenticateToken = async (req, res, next) => {
     req.user = user;
     next();
   } catch (error) {
+    console.error('Auth middleware error:', error);
+    
     if (error.name === 'TokenExpiredError') {
       return res.status(401).json({ message: 'Token expired' });
     }
@@ -77,9 +86,11 @@ const checkTaskAccess = async (req, res, next) => {
 
     const task = await prisma.task.findUnique({
       where: { id: taskId },
-      include: {
-        assignedProducts: { select: { id: true } },
-        assignedCompliance: { select: { id: true } }
+      select: {
+        id: true,
+        createdBy: true,
+        assignedProductIds: true,
+        assignedComplianceId: true
       }
     });
 
@@ -93,10 +104,10 @@ const checkTaskAccess = async (req, res, next) => {
     if (userRole === 'PRODUCT_USER' || userRole === 'PRODUCT_ADMIN') {
       // Product users can only access their own or team tasks
       hasAccess = task.createdBy === userId || 
-                  task.assignedProducts.some(p => p.id === userId);
+                  task.assignedProductIds.includes(userId);
     } else if (userRole === 'COMPLIANCE_USER' || userRole === 'COMPLIANCE_ADMIN') {
       // Compliance users can access assigned tasks or all tasks (for admin)
-      hasAccess = task.assignedCompliance?.id === userId || 
+      hasAccess = task.assignedComplianceId === userId || 
                   userRole === 'COMPLIANCE_ADMIN';
     }
 

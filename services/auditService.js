@@ -1,6 +1,14 @@
 const { PrismaClient } = require('@prisma/client');
 
-const prisma = new PrismaClient();
+// DocumentDB-specific Prisma configuration
+const prisma = new PrismaClient({
+  datasources: {
+    db: {
+      url: process.env.DATABASE_URL
+    }
+  },
+  log: process.env.NODE_ENV === 'development' ? ['error', 'warn'] : ['error']
+});
 
 class AuditService {
   
@@ -559,7 +567,7 @@ class AuditService {
     });
   }
 
-  // Query methods for retrieving audit data
+  // Query methods for retrieving audit data - Updated for DocumentDB compatibility
 
   // Get audit trail for a specific task
   async getTaskAuditTrail(taskId, limit = 50) {
@@ -569,7 +577,7 @@ class AuditService {
         orderBy: { timestamp: 'desc' },
         take: limit,
         include: {
-          performedBy: {
+          performedByUser: {
             select: {
               fullName: true,
               username: true,
@@ -677,7 +685,7 @@ class AuditService {
     }
   }
 
-  // Get audit logs with filters
+  // Get audit logs with filters - DocumentDB optimized
   async getAuditLogs(filters = {}, pagination = {}) {
     try {
       const {
@@ -712,7 +720,7 @@ class AuditService {
           skip: (page - 1) * limit,
           take: limit,
           include: {
-            performedBy: {
+            performedByUser: {
               select: {
                 fullName: true,
                 username: true,
@@ -785,7 +793,7 @@ class AuditService {
     }
   }
 
-  // Get audit statistics
+  // Get audit statistics - DocumentDB optimized
   async getAuditStatistics(dateFrom, dateTo) {
     try {
       const whereClause = {};
@@ -841,7 +849,7 @@ class AuditService {
     }
   }
 
-  // Get daily activity statistics
+  // Get daily activity statistics - DocumentDB compatible
   async getDailyActivityStats(dateFrom, dateTo) {
     try {
       const startDate = dateFrom ? new Date(dateFrom) : new Date(Date.now() - 30 * 24 * 60 * 60 * 1000); // Default 30 days
@@ -919,8 +927,8 @@ class AuditService {
       log.timestamp.toISOString(),
       log.action,
       log.details,
-      log.performedBy.fullName || log.performedBy,
-      log.performedBy.role || 'N/A',
+      log.performedByUser?.fullName || log.performedBy,
+      log.performedByUser?.role || 'N/A',
       log.task?.uin || '',
       log.task?.title || ''
     ]);
@@ -935,6 +943,40 @@ class AuditService {
       content: csvContent,
       filename: `audit_logs_${new Date().toISOString().split('T')[0]}.csv`
     };
+  }
+
+  // DocumentDB specific health check
+  async healthCheck() {
+    try {
+      // Test basic connection
+      await prisma.$connect();
+      
+      // Test a simple query
+      const recentLogsCount = await prisma.auditLog.count({
+        where: {
+          timestamp: {
+            gte: new Date(Date.now() - 24 * 60 * 60 * 1000) // Last 24 hours
+          }
+        }
+      });
+
+      return {
+        status: 'healthy',
+        database: 'DocumentDB',
+        connection: 'active',
+        recentLogsCount,
+        timestamp: new Date().toISOString()
+      };
+    } catch (error) {
+      console.error('Audit service health check failed:', error);
+      return {
+        status: 'unhealthy',
+        database: 'DocumentDB',
+        connection: 'failed',
+        error: error.message,
+        timestamp: new Date().toISOString()
+      };
+    }
   }
 }
 

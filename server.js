@@ -5,6 +5,8 @@ const compression = require('compression');
 const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
 const { PrismaClient } = require('@prisma/client');
+const path = require('path');
+const fs = require('fs');
 require('dotenv').config();
 
 // Import routes
@@ -25,7 +27,16 @@ const notificationService = require('./services/notificationService');
 const cronService = require('./services/cronService');
 
 const app = express();
-const prisma = new PrismaClient();
+
+// DocumentDB-specific Prisma configuration
+const prisma = new PrismaClient({
+  datasources: {
+    db: {
+      url: process.env.DATABASE_URL
+    }
+  },
+  log: process.env.NODE_ENV === 'development' ? ['error', 'warn'] : ['error']
+});
 
 // Security middleware
 app.use(helmet());
@@ -69,12 +80,73 @@ const validateObjectId = (paramName) => {
 };
 
 // Health check endpoint
-app.get('/health', (req, res) => {
-  res.status(200).json({ 
-    status: 'OK', 
-    timestamp: new Date().toISOString(),
-    uptime: process.uptime()
-  });
+app.get('/health', async (req, res) => {
+  try {
+    res.status(200).json({ 
+      status: 'OK', 
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+      database: 'DocumentDB',
+      environment: process.env.NODE_ENV
+    });
+  } catch (error) {
+    res.status(500).json({
+      status: 'ERROR',
+      timestamp: new Date().toISOString(),
+      database: 'DocumentDB - Connection Test Failed',
+      error: error.message
+    });
+  }
+});
+
+// DocumentDB connection test endpoint
+app.get('/api/test-db', async (req, res) => {
+  try {
+    // Test basic connection without querying data
+    await prisma.$connect();
+    
+    res.json({
+      success: true,
+      message: 'DocumentDB connection successful',
+      database: 'DocumentDB',
+      cluster: 'advertisement-compliance.cluster-czwqu2g268xr.eu-north-1.docdb.amazonaws.com',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'DocumentDB connection test failed',
+      error: error.message,
+      troubleshooting: {
+        checkSecurityGroup: 'Ensure DocumentDB security group allows port 27017 from your IP',
+        checkVPC: 'Verify DocumentDB is in correct VPC/subnet configuration',
+        checkSSL: 'Confirm global-bundle.pem certificate is present'
+      }
+    });
+  }
+});
+
+// Test endpoint that tries a simple query
+app.get('/api/test-db-query', async (req, res) => {
+  try {
+    await prisma.$connect();
+    
+    // Try a simple count query
+    const userCount = await prisma.user.count();
+    
+    res.json({
+      success: true,
+      message: 'DocumentDB query successful',
+      userCount,
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: 'DocumentDB query failed',
+      error: error.message
+    });
+  }
 });
 
 // API Routes
@@ -91,9 +163,12 @@ app.get('/', (req, res) => {
   res.json({ 
     message: 'Advertisement Compliance Tool API',
     version: '1.0.0',
+    database: 'Amazon DocumentDB',
     documentation: '/api/docs',
     endpoints: {
       health: '/health',
+      'test-db': '/api/test-db',
+      'test-db-query': '/api/test-db-query',
       auth: '/api/auth',
       tasks: '/api/tasks',
       users: '/api/users',
@@ -110,6 +185,7 @@ app.get('/api', (req, res) => {
   res.json({
     message: 'Advertisement Compliance Tool API',
     version: '1.0.0',
+    database: 'Amazon DocumentDB',
     timestamp: new Date().toISOString(),
     endpoints: {
       auth: '/api/auth',
@@ -136,28 +212,72 @@ app.use('*', (req, res) => {
 });
 
 // Graceful shutdown
-process.on('SIGINT', async () => {
-  console.log('Received SIGINT. Graceful shutdown...');
-  await prisma.$disconnect();
-  process.exit(0);
-});
+const gracefulShutdown = async (signal) => {
+  console.log(`Received ${signal}. Graceful shutdown...`);
+  
+  try {
+    // Stop cron services
+    if (cronService && cronService.stopAllJobs) {
+      cronService.stopAllJobs();
+      console.log('📅 Cron services stopped');
+    }
 
-process.on('SIGTERM', async () => {
-  console.log('Received SIGTERM. Graceful shutdown...');
-  await prisma.$disconnect();
-  process.exit(0);
-});
+    // Disconnect from DocumentDB
+    await prisma.$disconnect();
+    console.log('🔌 DocumentDB disconnected');
+
+    process.exit(0);
+  } catch (error) {
+    console.error('Error during shutdown:', error);
+    process.exit(1);
+  }
+};
+
+process.on('SIGINT', gracefulShutdown);
+process.on('SIGTERM', gracefulShutdown);
 
 const PORT = process.env.PORT || 5000;
 
-app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📊 Environment: ${process.env.NODE_ENV}`);
-  console.log(`💾 Database: MongoDB Atlas`);
-  
-  // Start cron services
-  cronService.startExpiryNotifications();
-  console.log('📅 Cron services started');
-});
+// Start server without database validation
+const startServer = async () => {
+  try {
+    console.log('🚀 Starting Advertisement Compliance API Server...');
+    console.log(`📊 Environment: ${process.env.NODE_ENV}`);
+    console.log(`💾 Database: Amazon DocumentDB`);
+    
+    // Check if SSL certificate exists
+    const certPath = path.join(process.cwd(), 'global-bundle.pem');
+    if (fs.existsSync(certPath)) {
+      console.log('✅ SSL certificate found');
+    } else {
+      console.log('⚠️ SSL certificate not found - this may cause connection issues');
+    }
+    
+    app.listen(PORT, () => {
+      console.log(`🚀 Server running on port ${PORT}`);
+      console.log(`🔗 Health check: http://localhost:${PORT}/health`);
+      console.log(`🧪 DB test: http://localhost:${PORT}/api/test-db`);
+      console.log(`📊 API info: http://localhost:${PORT}/api`);
+      
+      // Start cron services (with error handling)
+      try {
+        cronService.startExpiryNotifications();
+        console.log('📅 Cron services started');
+      } catch (cronError) {
+        console.error('⚠️ Warning: Cron services failed to start:', cronError.message);
+      }
+      
+      console.log('\n📝 Next steps:');
+      console.log('1. Test connection: http://localhost:5000/api/test-db');
+      console.log('2. If connection fails, check DocumentDB security group settings');
+      console.log('3. Ensure port 27017 is open for your IP address');
+    });
+  } catch (error) {
+    console.error('❌ Failed to start server:', error);
+    process.exit(1);
+  }
+};
+
+startServer();
 
 module.exports = app;

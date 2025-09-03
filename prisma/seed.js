@@ -1,324 +1,376 @@
- 
 const { PrismaClient } = require('@prisma/client');
 const bcrypt = require('bcryptjs');
 
 const prisma = new PrismaClient();
 
+// Helper function to generate unique UIN
+function generateUniqueUin(existingUins = new Set()) {
+  let uin;
+  do {
+    uin = `UIN-${Date.now()}-${Math.floor(Math.random() * 10000).toString().padStart(4, '0')}`;
+  } while (existingUins.has(uin));
+  
+  existingUins.add(uin);
+  return uin;
+}
+
+// Helper function to get random date within range
+function getRandomDate(start, end) {
+  return new Date(start.getTime() + Math.random() * (end.getTime() - start.getTime()));
+}
+
 async function main() {
   console.log('🌱 Starting database seeding...');
 
-  // Create Admin User
-  const adminPassword = await bcrypt.hash('admin123', 12);
-  const admin = await prisma.user.upsert({
-    where: { username: 'admin' },
-    update: {},
-    create: {
-      username: 'admin',
-      email: 'admin@company.com',
-      password: adminPassword,
-      fullName: 'System Administrator',
-      role: 'ADMIN',
-      isActive: true
-    }
-  });
-  console.log('✅ Admin user created:', admin.username);
+  try {
+    // Clear existing data in correct order (respecting foreign key constraints)
+    await prisma.notification.deleteMany();
+    await prisma.auditLog.deleteMany();
+    await prisma.comment.deleteMany();
+    await prisma.exchangeApproval.deleteMany();
+    await prisma.version.deleteMany();
+    await prisma.absence.deleteMany();
+    await prisma.task.deleteMany();
+    await prisma.user.deleteMany();
 
-  // Create Senior Manager
-  const seniorManagerPassword = await bcrypt.hash('manager123', 12);
-  const seniorManager = await prisma.user.upsert({
-    where: { username: 'seniormanager' },
-    update: {},
-    create: {
-      username: 'seniormanager',
-      email: 'senior.manager@company.com',
-      password: seniorManagerPassword,
-      fullName: 'Senior Manager',
-      role: 'SENIOR_MANAGER',
-      isActive: true
-    }
-  });
-  console.log('✅ Senior Manager created:', seniorManager.username);
+    // Create users with hashed passwords
+    const saltRounds = 10;
 
-  // Create Compliance Admin
-  const complianceAdminPassword = await bcrypt.hash('compliance123', 12);
-  const complianceAdmin = await prisma.user.upsert({
-    where: { username: 'complianceadmin' },
-    update: {},
-    create: {
-      username: 'complianceadmin',
-      email: 'compliance.admin@company.com',
-      password: complianceAdminPassword,
-      fullName: 'Compliance Administrator',
-      role: 'COMPLIANCE_ADMIN',
-      isActive: true
-    }
-  });
-  console.log('✅ Compliance Admin created:', complianceAdmin.username);
-
-  // Create Product Admin
-  const productAdminPassword = await bcrypt.hash('product123', 12);
-  const productAdmin = await prisma.user.upsert({
-    where: { username: 'productadmin' },
-    update: {},
-    create: {
-      username: 'productadmin',
-      email: 'product.admin@company.com',
-      password: productAdminPassword,
-      fullName: 'Product Administrator',
-      role: 'PRODUCT_ADMIN',
-      team: 'Marketing',
-      isActive: true
-    }
-  });
-  console.log('✅ Product Admin created:', productAdmin.username);
-
-  // Create Compliance Users
-  const complianceUsers = [
-    {
-      username: 'compliance1',
-      email: 'compliance1@company.com',
-      fullName: 'Compliance User One',
-      team: 'Compliance Team A'
-    },
-    {
-      username: 'compliance2',
-      email: 'compliance2@company.com',
-      fullName: 'Compliance User Two',
-      team: 'Compliance Team B'
-    }
-  ];
-
-  const compliancePassword = await bcrypt.hash('compliance123', 12);
-  for (const userData of complianceUsers) {
-    const user = await prisma.user.upsert({
-      where: { username: userData.username },
-      update: {},
-      create: {
-        ...userData,
-        password: compliancePassword,
-        role: 'COMPLIANCE_USER',
-        isActive: true
-      }
-    });
-    console.log('✅ Compliance User created:', user.username);
-  }
-
-  // Create Product Users
-  const productUsers = [
-    {
-      username: 'product1',
-      email: 'product1@company.com',
-      fullName: 'Product User One',
-      team: 'Marketing'
-    },
-    {
-      username: 'product2',
-      email: 'product2@company.com',
-      fullName: 'Product User Two',
-      team: 'Marketing'
-    },
-    {
-      username: 'product3',
-      email: 'product3@company.com',
-      fullName: 'Product User Three',
-      team: 'Sales'
-    }
-  ];
-
-  const productPassword = await bcrypt.hash('product123', 12);
-  const createdProductUsers = [];
-  for (const userData of productUsers) {
-    const user = await prisma.user.upsert({
-      where: { username: userData.username },
-      update: {},
-      create: {
-        ...userData,
-        password: productPassword,
-        role: 'PRODUCT_USER',
-        isActive: true
-      }
-    });
-    createdProductUsers.push(user);
-    console.log('✅ Product User created:', user.username);
-  }
-
-  // Get created compliance users
-  const createdComplianceUsers = await prisma.user.findMany({
-    where: {
-      role: 'COMPLIANCE_USER'
-    }
-  });
-
-  // Create sample tasks
-  const sampleTasks = [
-    {
-      title: 'Summer Campaign Advertisement',
-      description: 'Advertisement for summer campaign targeting young adults',
-      taskType: 'INTERNAL',
-      status: 'COMPLIANCE_REVIEW',
-      platform: 'Digital',
-      category: 'Campaign',
-      expectedPublishDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) // 7 days from now
-    },
-    {
-      title: 'NSE Product Launch Ad',
-      description: 'Product launch advertisement for NSE approval',
-      taskType: 'EXCHANGE',
-      status: 'OPEN',
-      platform: 'Print & Digital',
-      category: 'Product Launch',
-      expectedPublishDate: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000) // 14 days from now
-    },
-    {
-      title: 'Quarterly Results Announcement',
-      description: 'Advertisement for quarterly results announcement',
-      taskType: 'EXCHANGE',
-      status: 'APPROVED',
-      platform: 'Newspaper',
-      category: 'Corporate',
-      approvalDate: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000), // 2 days ago
-      expiryDate: new Date(Date.now() + 90 * 24 * 60 * 60 * 1000), // 90 days from now
-      expectedPublishDate: new Date(Date.now() + 3 * 24 * 60 * 60 * 1000) // 3 days from now
-    }
-  ];
-
-  for (let i = 0; i < sampleTasks.length; i++) {
-    const taskData = sampleTasks[i];
-    
-    // Generate UIN
-    const currentYear = new Date().getFullYear();
-    const uin = `ACT${currentYear}${String(i + 1).padStart(3, '0')}`;
-    
-    // Assign random product users
-    const assignedProducts = createdProductUsers.slice(0, 2).map(u => u.id);
-    
-    // Assign random compliance user
-    const assignedCompliance = createdComplianceUsers[i % createdComplianceUsers.length];
-
-    const task = await prisma.task.create({
+    // Admin user
+    const adminUser = await prisma.user.create({
       data: {
-        uin,
-        ...taskData,
-        createdBy: createdProductUsers[0].id, // First product user creates all tasks
-        assignedProductIds: assignedProducts,
-        assignedComplianceId: assignedCompliance.id
+        username: 'admin',
+        email: 'admin@company.com',
+        password: await bcrypt.hash('admin123', saltRounds),
+        fullName: 'System Administrator',
+        role: 'ADMIN',
+        isActive: true,
+        team: 'IT'
       }
     });
+    console.log('✅ Admin user created:', adminUser.username);
 
-    console.log('✅ Sample task created:', task.uin);
-
-    // Create initial version for each task
-    const version = await prisma.version.create({
+    // Senior Manager
+    const seniorManager = await prisma.user.create({
       data: {
-        versionNumber: '1.0',
-        fileUrls: [
-          'https://example.com/sample-ad-1.pdf',
-          'https://example.com/sample-creative.jpg'
-        ],
-        remarks: 'Initial version',
-        taskId: task.id,
-        uploadedById: createdProductUsers[0].id
+        username: 'seniormanager',
+        email: 'senior.manager@company.com',
+        password: await bcrypt.hash('manager123', saltRounds),
+        fullName: 'Senior Manager',
+        role: 'SENIOR_MANAGER',
+        isActive: true,
+        team: 'Management'
       }
     });
+    console.log('✅ Senior Manager created:', seniorManager.username);
 
-    console.log('✅ Initial version created for task:', task.uin);
+    // Compliance Admin
+    const complianceAdmin = await prisma.user.create({
+      data: {
+        username: 'complianceadmin',
+        email: 'compliance.admin@company.com',
+        password: await bcrypt.hash('compliance123', saltRounds),
+        fullName: 'Compliance Administrator',
+        role: 'COMPLIANCE_ADMIN',
+        isActive: true,
+        team: 'Compliance'
+      }
+    });
+    console.log('✅ Compliance Admin created:', complianceAdmin.username);
 
-    // Add sample comments
-    if (task.status === 'COMPLIANCE_REVIEW' || task.status === 'APPROVED') {
-      const comment = await prisma.comment.create({
+    // Product Admin
+    const productAdmin = await prisma.user.create({
+      data: {
+        username: 'productadmin',
+        email: 'product.admin@company.com',
+        password: await bcrypt.hash('product123', saltRounds),
+        fullName: 'Product Administrator',
+        role: 'PRODUCT_ADMIN',
+        isActive: true,
+        team: 'Product'
+      }
+    });
+    console.log('✅ Product Admin created:', productAdmin.username);
+
+    // Compliance Users
+    const createdComplianceUsers = [];
+    for (let i = 1; i <= 2; i++) {
+      const user = await prisma.user.create({
         data: {
-          content: 'Please review the compliance requirements and update accordingly.',
-          isGlobal: false,
-          taskId: task.id,
-          versionId: version.id,
-          authorId: assignedCompliance.id
+          username: `compliance${i}`,
+          email: `compliance${i}@company.com`,
+          password: await bcrypt.hash(`compliance${i}123`, saltRounds),
+          fullName: `Compliance User ${i}`,
+          role: 'COMPLIANCE_USER',
+          isActive: true,
+          team: 'Compliance'
         }
       });
-
-      console.log('✅ Sample comment added for task:', task.uin);
+      createdComplianceUsers.push(user);
+      console.log('✅ Compliance User created:', user.username);
     }
 
-    // Add exchange approvals for exchange tasks
-    if (task.taskType === 'EXCHANGE') {
-      const exchangeApproval = await prisma.exchangeApproval.create({
+    // Product Users
+    const createdProductUsers = [];
+    for (let i = 1; i <= 3; i++) {
+      const user = await prisma.user.create({
         data: {
-          exchangeName: i === 1 ? 'NSE' : 'BSE',
-          typeOfContent: 'Product Advertisement',
-          approvalStatus: task.status === 'APPROVED' ? 'APPROVED' : 'PENDING',
-          ...(task.status === 'APPROVED' && {
-            approvalDate: task.approvalDate,
-            expiryDate: task.expiryDate,
-            referenceNumber: `REF${currentYear}${String(i + 1).padStart(4, '0')}`,
-            approvalEmailUrl: 'https://example.com/approval-email.pdf'
-          }),
-          taskId: task.id,
-          updatedById: assignedCompliance.id
+          username: `product${i}`,
+          email: `product${i}@company.com`,
+          password: await bcrypt.hash(`product${i}123`, saltRounds),
+          fullName: `Product User ${i}`,
+          role: 'PRODUCT_USER',
+          isActive: true,
+          team: 'Product'
         }
       });
-
-      console.log('✅ Exchange approval created for task:', task.uin);
+      createdProductUsers.push(user);
+      console.log('✅ Product User created:', user.username);
     }
 
-    // Create audit logs
-    await prisma.auditLog.create({
-      data: {
-        action: 'TASK_CREATED',
-        details: `Task "${task.title}" created with UIN: ${task.uin}`,
-        performedBy: createdProductUsers[0].id,
-        taskId: task.id
+    // Create sample tasks with unique UINs
+    const existingUins = new Set();
+    const taskStatuses = ['OPEN', 'COMPLIANCE_REVIEW', 'PRODUCT_REVIEW', 'APPROVED', 'PUBLISHED'];
+    const taskTypes = ['INTERNAL', 'EXCHANGE'];
+    
+    const sampleTasks = [
+      {
+        title: 'Social Media Campaign Review',
+        description: 'Review compliance for new social media advertising campaign targeting millennials',
+        type: 'EXCHANGE'
+      },
+      {
+        title: 'Product Launch Advertisement',
+        description: 'Compliance check for product launch advertisement across digital channels',
+        type: 'EXCHANGE'
+      },
+      {
+        title: 'Internal Newsletter Content',
+        description: 'Review internal newsletter content for compliance standards',
+        type: 'INTERNAL'
+      },
+      {
+        title: 'Email Marketing Campaign',
+        description: 'Compliance review for automated email marketing sequences',
+        type: 'EXCHANGE'
+      },
+      {
+        title: 'Website Banner Updates',
+        description: 'Review website banner advertisements for regulatory compliance',
+        type: 'INTERNAL'
+      },
+      {
+        title: 'TV Commercial Script',
+        description: 'Compliance review for new television commercial script and storyboard',
+        type: 'EXCHANGE'
+      },
+      {
+        title: 'Print Advertisement Design',
+        description: 'Review print advertisement design for magazine placement',
+        type: 'EXCHANGE'
+      },
+      {
+        title: 'Radio Spot Content',
+        description: 'Compliance check for radio advertisement content and timing',
+        type: 'EXCHANGE'
       }
-    });
+    ];
 
-    await prisma.auditLog.create({
-      data: {
-        action: 'VERSION_UPLOADED',
-        details: `Version 1.0 uploaded with 2 files`,
-        performedBy: createdProductUsers[0].id,
-        taskId: task.id
-      }
-    });
+    const createdTasks = [];
+    
+    for (let i = 0; i < sampleTasks.length; i++) {
+      const taskData = sampleTasks[i];
+      
+      // Assign random creator from product users
+      const creator = createdProductUsers[i % createdProductUsers.length];
+      
+      // Assign random compliance user
+      const assignedCompliance = createdComplianceUsers[i % createdComplianceUsers.length];
+      
+      const task = await prisma.task.create({
+        data: {
+          uin: generateUniqueUin(existingUins),
+          title: taskData.title,
+          description: taskData.description,
+          taskType: taskData.type,
+          status: taskStatuses[i % taskStatuses.length],
+          creator: {
+            connect: { id: creator.id }
+          },
+          assignedCompliance: {
+            connect: { id: assignedCompliance.id }
+          }
+        }
+      });
+      
+      createdTasks.push(task);
+      console.log('✅ Task created:', task.title);
+    }
 
-    // Create notifications
-    await prisma.notification.create({
-      data: {
-        title: 'New Task Assigned',
-        message: `You have been assigned task: "${task.title}"`,
-        type: 'TASK_ASSIGNED',
-        userId: assignedCompliance.id,
-        taskId: task.id
+    // Create sample versions for some tasks
+    for (let i = 0; i < Math.min(4, createdTasks.length); i++) {
+      const task = createdTasks[i];
+      const uploader = createdProductUsers[i % createdProductUsers.length];
+      
+      const version = await prisma.version.create({
+        data: {
+          task: {
+            connect: { id: task.id }
+          },
+          versionNumber: "1",
+          fileUrls: [`/uploads/tasks/${task.id}/v1.pdf`],
+          remarks: "Initial version upload",
+          uploadedBy: {
+            connect: { id: uploader.id }
+          }
+        }
+      });
+      console.log('✅ Version created for task:', task.title);
+    }
+
+    // Create sample comments
+    const sampleComments = [
+      'Please review the font size compliance for accessibility standards.',
+      'The claims in section 2 need legal verification.',
+      'Great work! This looks compliant with current regulations.',
+      'Consider revising the disclaimer text to be more prominent.',
+      'The target audience specification needs clarification.'
+    ];
+
+    for (let i = 0; i < Math.min(6, createdTasks.length); i++) {
+      const task = createdTasks[i];
+      const commenter = i % 2 === 0 ? createdComplianceUsers[0] : createdProductUsers[0];
+      
+      await prisma.comment.create({
+        data: {
+          task: {
+            connect: { id: task.id }
+          },
+          content: sampleComments[i % sampleComments.length],
+          author: {
+            connect: { id: commenter.id }
+          },
+          isGlobal: Math.random() < 0.3 // 30% global comments, 70% non-global
+        }
+      });
+      console.log('✅ Comment created for task:', task.title);
+    }
+
+    // Create sample absence records
+    const currentDate = new Date();
+    const absences = [
+      {
+        user: createdComplianceUsers[0],
+        reason: 'Annual Leave',
+        days: 5
+      },
+      {
+        user: createdProductUsers[0],
+        reason: 'Sick Leave',
+        days: 2
+      },
+      {
+        user: createdProductUsers[1],
+        reason: 'Training',
+        days: 3
       }
-    });
+    ];
+
+    for (const absence of absences) {
+      const startDate = getRandomDate(
+        new Date(currentDate.getTime() - 30 * 24 * 60 * 60 * 1000), // 30 days ago
+        new Date(currentDate.getTime() + 30 * 24 * 60 * 60 * 1000)   // 30 days future
+      );
+      const endDate = new Date(startDate.getTime() + absence.days * 24 * 60 * 60 * 1000);
+
+      await prisma.absence.create({
+        data: {
+          user: {
+            connect: { id: absence.user.id }
+          },
+          fromDate: startDate, // Added required fromDate field
+          startDate: startDate,
+          endDate: endDate,
+          reason: absence.reason,
+          isApproved: true,
+          createdBy: {
+            connect: { id: seniorManager.id }
+          }
+        }
+      });
+      console.log('✅ Absence created for:', absence.user.fullName);
+    }
+
+    // Create sample notifications
+    const notificationTypes = ['TASK_ASSIGNED', 'COMMENT_ADDED', 'VERSION_UPLOADED', 'TASK_APPROVED'];
+    
+    for (let i = 0; i < 5; i++) {
+      const task = createdTasks[i % createdTasks.length];
+      const user = [...createdComplianceUsers, ...createdProductUsers][i % (createdComplianceUsers.length + createdProductUsers.length)];
+      
+      await prisma.notification.create({
+        data: {
+          user: {
+            connect: { id: user.id }
+          },
+          task: {
+            connect: { id: task.id }
+          },
+          type: notificationTypes[i % notificationTypes.length],
+          title: `Task Update: ${task.title}`,
+          message: `You have a new update on task: ${task.title}`,
+          isRead: Math.random() > 0.5 // 50% read notifications
+        }
+      });
+      console.log('✅ Notification created for:', user.fullName);
+    }
+
+    // Create sample audit logs
+    const actions = ['CREATED', 'UPDATED', 'DELETED', 'ASSIGNED', 'APPROVED', 'PUBLISHED'];
+    
+    for (let i = 0; i < 8; i++) {
+      const task = createdTasks[i % createdTasks.length];
+      const user = [adminUser, seniorManager, complianceAdmin, productAdmin][i % 4];
+      
+      await prisma.auditLog.create({
+        data: {
+          user: {
+            connect: { id: user.id }
+          },
+          task: {
+            connect: { id: task.id }
+          },
+          action: actions[i % actions.length],
+          details: `Task ${task.title} was ${actions[i % actions.length].toLowerCase()}`,
+          ipAddress: `192.168.1.${Math.floor(Math.random() * 255)}`,
+          userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      });
+      console.log('✅ Audit log created for task:', task.title);
+    }
+
+    console.log('\n🎉 Database seeding completed successfully!');
+    console.log('\n📊 Summary:');
+    console.log(`👥 Users created: ${await prisma.user.count()}`);
+    console.log(`📋 Tasks created: ${await prisma.task.count()}`);
+    console.log(`📄 Versions created: ${await prisma.version.count()}`);
+    console.log(`💬 Comments created: ${await prisma.comment.count()}`);
+    console.log(`🏖️ Absences created: ${await prisma.absence.count()}`);
+    console.log(`🔔 Notifications created: ${await prisma.notification.count()}`);
+    console.log(`📝 Audit logs created: ${await prisma.auditLog.count()}`);
+
+  } catch (error) {
+    console.error('❌ Seeding failed:', error);
+    throw error;
   }
-
-  // Create sample absence record
-  await prisma.absence.create({
-    data: {
-      fromDate: new Date(Date.now() + 5 * 24 * 60 * 60 * 1000), // 5 days from now
-      toDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000), // 7 days from now
-      reason: 'Personal leave',
-      userId: createdComplianceUsers[0].id,
-      createdById: complianceAdmin.id
-    }
-  });
-
-  console.log('✅ Sample absence record created');
-
-  console.log('🎉 Database seeding completed successfully!');
-  console.log('\n📋 Login Credentials:');
-  console.log('Admin: admin / admin123');
-  console.log('Senior Manager: seniormanager / manager123');
-  console.log('Compliance Admin: complianceadmin / compliance123');
-  console.log('Product Admin: productadmin / product123');
-  console.log('Compliance Users: compliance1, compliance2 / compliance123');
-  console.log('Product Users: product1, product2, product3 / product123');
 }
 
 main()
-  .then(async () => {
-    await prisma.$disconnect();
-  })
-  .catch(async (e) => {
-    console.error('❌ Seeding failed:', e);
-    await prisma.$disconnect();
+  .catch((e) => {
+    console.error('❌ Seeding process failed:', e);
     process.exit(1);
+  })
+  .finally(async () => {
+    await prisma.$disconnect();
+    console.log('📡 Database connection closed.');
   });
